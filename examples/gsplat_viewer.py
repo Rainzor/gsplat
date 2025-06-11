@@ -9,7 +9,7 @@ class GsplatRenderTabState(RenderTabState):
     # non-controlable parameters
     total_gs_count: int = 0
     rendered_gs_count: int = 0
-
+    fps_render: float = 0.0
     # controlable parameters
     max_sh_degree: int = 5
     near_plane: float = 1e-2
@@ -64,6 +64,12 @@ class GsplatViewer(Viewer):
                     initial_value=self.render_tab_state.rendered_gs_count,
                     disabled=True,
                     hint="Number of splats rendered.",
+                )
+                fps_render_number = server.gui.add_number(
+                    "FPS_RENDER",
+                    initial_value=self.render_tab_state.fps_render,
+                    disabled=True,
+                    hint="FPS of rendering.",
                 )
 
                 max_sh_degree_number = server.gui.add_number(
@@ -223,6 +229,7 @@ class GsplatViewer(Viewer):
             {
                 "total_gs_count_number": total_gs_count_number,
                 "rendered_gs_count_number": rendered_gs_count_number,
+                "fps_render_number": fps_render_number,
                 "near_far_plane_vec2": near_far_plane_vec2,
                 "radius_clip_slider": radius_clip_slider,
                 "eps2d_slider": eps2d_slider,
@@ -245,3 +252,6 @@ class GsplatViewer(Viewer):
         self._rendering_tab_handles[
             "rendered_gs_count_number"
         ].value = self.render_tab_state.rendered_gs_count
+        self._rendering_tab_handles[
+            "fps_render_number"
+        ].value = self.render_tab_state.fps_render

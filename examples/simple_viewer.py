@@ -13,11 +13,60 @@ from pathlib import Path
 from gsplat._helper import load_test_data
 from gsplat.distributed import cli
 from gsplat.rendering import rasterization
+from plyfile import PlyData
 
 from nerfview import CameraState, RenderTabState, apply_float_colormap
 from gsplat_viewer import GsplatViewer, GsplatRenderTabState
 
 from gsplat import PngCompression
+
+def load_ply_to_gsplat_vars(path, max_sh_degree=3, device="cuda"):
+    plydata = PlyData.read(path)
+
+    # means
+    xyz = np.stack((np.asarray(plydata.elements[0]["x"]),
+                    np.asarray(plydata.elements[0]["y"]),
+                    np.asarray(plydata.elements[0]["z"])), axis=1)
+    means = torch.tensor(xyz, dtype=torch.float, device=device)
+
+    # opacities
+    opacities = np.asarray(plydata.elements[0]["opacity"])
+    opacities = torch.tensor(opacities, dtype=torch.float, device=device).squeeze()
+
+    # sh0
+    features_dc = np.zeros((xyz.shape[0], 3, 1))
+    features_dc[:, 0, 0] = np.asarray(plydata.elements[0]["f_dc_0"])
+    features_dc[:, 1, 0] = np.asarray(plydata.elements[0]["f_dc_1"])
+    features_dc[:, 2, 0] = np.asarray(plydata.elements[0]["f_dc_2"])
+    sh0 = torch.tensor(features_dc, dtype=torch.float, device=device).transpose(1, 2).contiguous()
+
+    # shN
+    extra_f_names = [p.name for p in plydata.elements[0].properties if p.name.startswith("f_rest_")]
+    extra_f_names = sorted(extra_f_names, key=lambda x: int(x.split('_')[-1]))
+    features_extra = np.zeros((xyz.shape[0], len(extra_f_names)))
+    for idx, attr_name in enumerate(extra_f_names):
+        features_extra[:, idx] = np.asarray(plydata.elements[0][attr_name])
+    features_extra = features_extra.reshape((features_extra.shape[0], 3, (max_sh_degree + 1) ** 2 - 1))
+    shN = torch.tensor(features_extra, dtype=torch.float, device=device).transpose(1, 2).contiguous()
+
+    # scales
+    scale_names = [p.name for p in plydata.elements[0].properties if p.name.startswith("scale_")]
+    scale_names = sorted(scale_names, key=lambda x: int(x.split('_')[-1]))
+    scales = np.zeros((xyz.shape[0], len(scale_names)))
+    for idx, attr_name in enumerate(scale_names):
+        scales[:, idx] = np.asarray(plydata.elements[0][attr_name])
+    scales = torch.tensor(scales, dtype=torch.float, device=device)
+
+    # quats
+    rot_names = [p.name for p in plydata.elements[0].properties if p.name.startswith("rot")]
+    rot_names = sorted(rot_names, key=lambda x: int(x.split('_')[-1]))
+    rots = np.zeros((xyz.shape[0], len(rot_names)))
+    for idx, attr_name in enumerate(rot_names):
+        rots[:, idx] = np.asarray(plydata.elements[0][attr_name])
+    # 假设 rots 已经是四元数 [N, 4]，否则需要转换
+    quats = torch.tensor(rots, dtype=torch.float, device=device)
+
+    return means, quats, scales, opacities, sh0, shN
 
 def main(local_rank: int, world_rank, world_size: int, args):
     torch.manual_seed(42)
@@ -102,14 +151,28 @@ def main(local_rank: int, world_rank, world_size: int, args):
         )
     else:
         means, quats, scales, opacities, sh0, shN = [], [], [], [], [], []
-        for ckpt_path in args.ckpt:
-            ckpt = torch.load(ckpt_path, map_location=device)["splats"]
-            means.append(ckpt["means"])
-            quats.append(F.normalize(ckpt["quats"], p=2, dim=-1))
-            scales.append(torch.exp(ckpt["scales"]))
-            opacities.append(torch.sigmoid(ckpt["opacities"]))
-            sh0.append(ckpt["sh0"])
-            shN.append(ckpt["shN"])
+
+        file_type = args.ckpt[0].split(".")[-1]
+
+        if file_type == "pt":
+            for ckpt_path in args.ckpt:
+                ckpt = torch.load(ckpt_path, map_location=device)["splats"]
+                means.append(ckpt["means"])
+                quats.append(F.normalize(ckpt["quats"], p=2, dim=-1))
+                scales.append(torch.exp(ckpt["scales"]))
+                opacities.append(torch.sigmoid(ckpt["opacities"]))
+                sh0.append(ckpt["sh0"])
+                shN.append(ckpt["shN"])
+        elif file_type == "ply":
+            for ckpt_path in args.ckpt:
+                means, quats, scales, opacities, sh0, shN = load_ply_to_gsplat_vars(ckpt_path, device=device)
+                means.append(means)
+                quats.append(quats)
+                scales.append(scales)
+                opacities.append(opacities)
+                sh0.append(sh0)
+                shN.append(shN)
+
         means = torch.cat(means, dim=0)
         quats = torch.cat(quats, dim=0)
         scales = torch.cat(scales, dim=0)
@@ -119,19 +182,6 @@ def main(local_rank: int, world_rank, world_size: int, args):
         colors = torch.cat([sh0, shN], dim=-2)
         sh_degree = int(math.sqrt(colors.shape[-2]) - 1)
         print("Number of Gaussians:", len(means))
-        splats = {
-            "means": means, "scales": scales, "quats": quats, "opacities": opacities,
-            "sh0": sh0, "shN": shN
-        }
-        if args.compress:
-            compress_dir = f"{args.output_dir}/compression/rank{world_rank}"
-            os.makedirs(compress_dir, exist_ok=True)
-            compression_method = PngCompression()
-            splats_c = compression_method.compress(compress_dir,splats)
-            for k in splats_c.keys():
-                splats[k].data = splats_c[k].to(device)
-            print(f"Compressed scene saved to {compress_dir}")
-            print(f"Number of Gaussians: {len(means)}")
         
     # register and open viewer
     @torch.no_grad()
@@ -155,6 +205,7 @@ def main(local_rank: int, world_rank, world_size: int, args):
             "depth(expected)": "ED",
             "alpha": "RGB",
         }
+        start_time = time.time()
         if args.backend == "gsplat":
             render_colors, render_alphas, info = rasterization(
                 means,  # [N, 3]
@@ -186,7 +237,6 @@ def main(local_rank: int, world_rank, world_size: int, args):
             )
         elif args.backend == "inria":
             from gsplat import rasterization_inria_wrapper
-
             render_colors, render_alphas, info = rasterization_inria_wrapper(
                 means,  # [N, 3]
                 quats,  # [N, 4]
@@ -210,10 +260,10 @@ def main(local_rank: int, world_rank, world_size: int, args):
             )
         else:
             raise ValueError
-
+        end_time = time.time()
         render_tab_state.total_gs_count = len(means)
         render_tab_state.rendered_gs_count = (info["radii"] > 0).all(-1).sum().item()
-
+        render_tab_state.fps_render = 1.0 / (end_time - start_time)
         if render_tab_state.render_mode == "rgb":
             # colors represented with sh are not guranteed to be in [0, 1]
             render_colors = render_colors[0, ..., 0:3].clamp(0, 1)
