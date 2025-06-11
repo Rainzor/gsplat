@@ -165,13 +165,13 @@ def main(local_rank: int, world_rank, world_size: int, args):
                 shN.append(ckpt["shN"])
         elif file_type == "ply":
             for ckpt_path in args.ckpt:
-                means, quats, scales, opacities, sh0, shN = load_ply_to_gsplat_vars(ckpt_path, device=device)
-                means.append(means)
-                quats.append(quats)
-                scales.append(scales)
-                opacities.append(opacities)
-                sh0.append(sh0)
-                shN.append(shN)
+                _means, _quats, _scales, _opacities, _sh0, _shN = load_ply_to_gsplat_vars(ckpt_path, device=device)
+                means.append(_means)
+                quats.append(_quats)
+                scales.append(_scales)
+                opacities.append(_opacities)
+                sh0.append(_sh0)
+                shN.append(_shN)
 
         means = torch.cat(means, dim=0)
         quats = torch.cat(quats, dim=0)
