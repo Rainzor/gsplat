@@ -1141,8 +1141,6 @@ def rasterization_inria_wrapper(
     device = means.device
     channels = colors.shape[-1]
 
-    antialiased = rasterize_mode == "antialiased"
-
     assert means.shape == batch_dims + (N, 3), means.shape
     assert quats.shape == batch_dims + (N, 4), quats.shape
     assert scales.shape == batch_dims + (N, 3), scales.shape
@@ -1224,7 +1222,6 @@ def rasterization_inria_wrapper(
                 campos=camera_center,
                 prefiltered=False,
                 debug=False,
-                antialiasing=antialiased,
             )
 
             rasterizer = GaussianRasterizer(raster_settings=raster_settings)

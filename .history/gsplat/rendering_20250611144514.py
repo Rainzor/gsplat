@@ -1224,7 +1224,6 @@ def rasterization_inria_wrapper(
                 campos=camera_center,
                 prefiltered=False,
                 debug=False,
-                antialiasing=antialiased,
             )
 
             rasterizer = GaussianRasterizer(raster_settings=raster_settings)

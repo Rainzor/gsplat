@@ -17,7 +17,6 @@ from gsplat.rendering import rasterization
 from nerfview import CameraState, RenderTabState, apply_float_colormap
 from gsplat_viewer import GsplatViewer, GsplatRenderTabState
 
-from gsplat import PngCompression
 
 def main(local_rank: int, world_rank, world_size: int, args):
     torch.manual_seed(42)
@@ -119,20 +118,7 @@ def main(local_rank: int, world_rank, world_size: int, args):
         colors = torch.cat([sh0, shN], dim=-2)
         sh_degree = int(math.sqrt(colors.shape[-2]) - 1)
         print("Number of Gaussians:", len(means))
-        splats = {
-            "means": means, "scales": scales, "quats": quats, "opacities": opacities,
-            "sh0": sh0, "shN": shN
-        }
-        if args.compress:
-            compress_dir = f"{args.output_dir}/compression/rank{world_rank}"
-            os.makedirs(compress_dir, exist_ok=True)
-            compression_method = PngCompression()
-            splats_c = compression_method.compress(compress_dir,splats)
-            for k in splats_c.keys():
-                splats[k].data = splats_c[k].to(device)
-            print(f"Compressed scene saved to {compress_dir}")
-            print(f"Number of Gaussians: {len(means)}")
-        
+
     # register and open viewer
     @torch.no_grad()
     def viewer_render_fn(camera_state: CameraState, render_tab_state: RenderTabState):
@@ -197,16 +183,16 @@ def main(local_rank: int, world_rank, world_size: int, args):
                 K[None],  # [1, 3, 3]
                 width,
                 height,
-                near_plane=render_tab_state.near_plane,
-                far_plane=render_tab_state.far_plane,
-                backgrounds=torch.tensor([render_tab_state.backgrounds], device=device)
-                / 255.0,
                 sh_degree=(
                     min(render_tab_state.max_sh_degree, sh_degree)
                     if sh_degree is not None
                     else None
                 ),
-                rasterize_mode=render_tab_state.rasterize_mode
+                packed=False,
+                render_mode="RGB",
+                rasterize_mode=render_tab_state.rasterize_mode,
+                radius_clip=3,
+                camera_model= "pinhole",
             )
         else:
             raise ValueError
@@ -285,7 +271,6 @@ if __name__ == "__main__":
     parser.add_argument("--with_eval3d", action="store_true", help="use eval 3D")
 
     parser.add_argument("--backend", type=str, default="gsplat", help="gsplat, inria")
-    parser.add_argument("--compress", action="store_true", help="compress the scene")
     args = parser.parse_args()
     assert args.scene_grid % 2 == 1, "scene_grid must be odd"
 

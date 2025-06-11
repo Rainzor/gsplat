@@ -119,20 +119,13 @@ def main(local_rank: int, world_rank, world_size: int, args):
         colors = torch.cat([sh0, shN], dim=-2)
         sh_degree = int(math.sqrt(colors.shape[-2]) - 1)
         print("Number of Gaussians:", len(means))
-        splats = {
+        splats: Dict[str, Tensor] = {
             "means": means, "scales": scales, "quats": quats, "opacities": opacities,
-            "sh0": sh0, "shN": shN
+            "sh0": sh0, "shN": shN, "features1": None, "features2": None,
         }
         if args.compress:
-            compress_dir = f"{args.output_dir}/compression/rank{world_rank}"
-            os.makedirs(compress_dir, exist_ok=True)
-            compression_method = PngCompression()
-            splats_c = compression_method.compress(compress_dir,splats)
-            for k in splats_c.keys():
-                splats[k].data = splats_c[k].to(device)
-            print(f"Compressed scene saved to {compress_dir}")
-            print(f"Number of Gaussians: {len(means)}")
-        
+            splats = PngCompression.compress(splats)
+
     # register and open viewer
     @torch.no_grad()
     def viewer_render_fn(camera_state: CameraState, render_tab_state: RenderTabState):

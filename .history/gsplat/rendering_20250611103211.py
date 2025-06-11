@@ -1111,7 +1111,6 @@ def rasterization_inria_wrapper(
     eps2d: float = 0.3,
     sh_degree: Optional[int] = None,
     backgrounds: Optional[Tensor] = None,
-    rasterize_mode: Literal["classic", "antialiased"] = "classic",
     **kwargs,
 ) -> Tuple[Tensor, Tensor, Dict]:
     """Wrapper for Inria's rasterization backend.
@@ -1140,8 +1139,6 @@ def rasterization_inria_wrapper(
     I = B * C
     device = means.device
     channels = colors.shape[-1]
-
-    antialiased = rasterize_mode == "antialiased"
 
     assert means.shape == batch_dims + (N, 3), means.shape
     assert quats.shape == batch_dims + (N, 4), quats.shape
@@ -1224,7 +1221,6 @@ def rasterization_inria_wrapper(
                 campos=camera_center,
                 prefiltered=False,
                 debug=False,
-                antialiasing=antialiased,
             )
 
             rasterizer = GaussianRasterizer(raster_settings=raster_settings)
