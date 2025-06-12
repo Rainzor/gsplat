@@ -225,7 +225,7 @@ def rasterization(
         **render_colors**: The rendered colors. [..., C, height, width, X].
         X depends on the `render_mode` and input `colors`. If `render_mode` is "RGB",
         X is D; if `render_mode` is "D" or "ED", X is 1; if `render_mode` is "RGB+D" or
-        "RGB+ED", X is D+1.
+        "RGB+ED", X is D+1. For rgb, the range should be [0, 1].
 
         **render_alphas**: The rendered alphas. [..., C, height, width, 1].
 
@@ -1095,7 +1095,6 @@ def _rasterization(
 #     render_alphas = torch.stack(render_alphas, dim=0)
 #     return render_colors, render_alphas, {}
 
-
 def rasterization_inria_wrapper(
     means: Tensor,  # [..., N, 3]
     quats: Tensor,  # [..., N, 4]
@@ -1137,6 +1136,7 @@ def rasterization_inria_wrapper(
     N = means.shape[-2]
     B = math.prod(batch_dims)
     C = viewmats.shape[-3]
+    # print(batch_dims, num_batch_dims, N, B, C)
     I = B * C
     device = means.device
     channels = colors.shape[-1]
@@ -1180,14 +1180,24 @@ def rasterization_inria_wrapper(
     opacities = opacities.reshape(B, N)
     viewmats = viewmats.reshape(B, C, 4, 4)
     Ks = Ks.reshape(B, C, 3, 3)
-    if colors.dim() == num_batch_dims + 2:
-        colors = colors.reshape(B, N, -1)
-    elif colors.dim() == num_batch_dims + 3:
-        colors = colors.reshape(B, C, N, -1)
 
+    if sh_degree is None:
+        if colors.dim() == num_batch_dims + 2:
+            colors = colors.reshape(B, N, -1)
+        elif colors.dim() == num_batch_dims + 3:
+            colors = colors.reshape(B, C, N, -1)
+    else:
+        K = colors.shape[-2]
+        if colors.dim() == num_batch_dims + 3:
+            colors = colors.reshape(B, N, K, 3)
+        elif colors.dim() == num_batch_dims + 4:
+            colors = colors.reshape(B, C, N, K, 3)
+
+
+    # print(opacities.shape)
     # rasterization from inria does not do normalization internally
     quats = F.normalize(quats, dim=-1)  # [N, 4]
-
+    meta = {}
     render_colors = []
     for bid in range(B):
         for cid in range(C):
@@ -1230,35 +1240,57 @@ def rasterization_inria_wrapper(
             rasterizer = GaussianRasterizer(raster_settings=raster_settings)
 
             means2D = torch.zeros_like(means, requires_grad=True, device=device)
+            render_colors_, radii, invdepths = rasterizer(
+                means3D=means[bid],
+                means2D=means2D[bid],
+                shs=colors[bid] if sh_degree is not None else None,
+                colors_precomp=colors[bid] if sh_degree is None else None,
+                opacities=opacities[bid],
+                scales=scales[bid],
+                rotations=quats[bid],
+                cov3D_precomp=None,
+            )
 
-            render_colors_ = []
-            for i in range(0, channels, 3):
-                _colors = colors[bid, ..., i : i + 3]
-                if _colors.shape[-1] < 3:
-                    pad = torch.zeros(
-                        _colors.shape[:-1], 3 - _colors.shape[-1], device=device
-                    )
-                    _colors = torch.cat([_colors, pad], dim=-1)
-                _render_colors_, radii = rasterizer(
-                    means3D=means[bid],
-                    means2D=means2D[bid],
-                    shs=_colors if colors.dim() == 4 else None,
-                    colors_precomp=_colors if colors.dim() == 3 else None,
-                    opacities=opacities[..., None],
-                    scales=scales[bid],
-                    rotations=quats[bid],
-                    cov3D_precomp=None,
-                )
-                if _colors.shape[-1] < 3:
-                    _render_colors_ = _render_colors_[..., : _colors.shape[-1]]
-                render_colors_.append(_render_colors_)
-            render_colors_ = torch.cat(render_colors_, dim=-1)
+            # render_colors_ = []
+            # for i in range(0, channels, 3):
+            #     _colors = colors[bid, ..., i : i + 3]
+            #     if _colors.shape[-1] < 3:
+            #         pad = torch.zeros(
+            #             _colors.shape[:-1], 3 - _colors.shape[-1], device=device
+            #         )
+            #         _colors = torch.cat([_colors, pad], dim=-1)
+            #     _render_colors_, radii, invdepths = rasterizer(
+            #         means3D=means[bid],
+            #         means2D=means2D[bid],
+            #         shs=_colors if colors.dim() == 4 else None,
+            #         colors_precomp=_colors if colors.dim() == 3 else None,
+            #         opacities=opacities[..., None],
+            #         scales=scales[bid],
+            #         rotations=quats[bid],
+            #         cov3D_precomp=None,
+            #     )
+            #     if _colors.shape[-1] < 3:
+            #         _render_colors_ = _render_colors_[..., : _colors.shape[-1]]
+            #     render_colors_.append(_render_colors_)
+            # render_colors_ = torch.cat(render_colors_, dim=-1)
 
             render_colors_ = render_colors_.permute(1, 2, 0)  # [H, W, 3]
             render_colors.append(render_colors_)
     render_colors = torch.stack(render_colors, dim=0)
-    render_colors = render_colors.reshape(batch_dims + (height, width, channels))
-    return render_colors, None, {}
+    render_colors = render_colors.reshape(batch_dims + (C, height, width, channels))
+
+    meta.update(
+        {
+            "radii": radii,
+            "invdepths": invdepths,
+            "means2d": means2D,
+            "width": width,
+            "height": height,
+            "n_batches": B,
+            "n_cameras": C,
+        }
+    )
+    return render_colors, None, meta
 
 
 ###### 2DGS ######

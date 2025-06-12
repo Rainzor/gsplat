@@ -2,7 +2,7 @@ import viser
 from pathlib import Path
 from typing import Literal
 from typing import Tuple, Callable
-from nerfview import Viewer, RenderTabState
+from nerfview import Viewer, RenderTabState, CameraState
 
 
 class GsplatRenderTabState(RenderTabState):
@@ -40,8 +40,10 @@ class GsplatViewer(Viewer):
         render_fn: Callable,
         output_dir: Path,
         mode: Literal["rendering", "training"] = "rendering",
+        init_camera_extrinsics: CameraState = None,
     ):
         super().__init__(server, render_fn, output_dir, mode)
+        self.init_camera_extrinsics = init_camera_extrinsics
         server.gui.set_panel_label("gsplat viewer")
 
     def _init_rendering_tab(self):
@@ -255,3 +257,19 @@ class GsplatViewer(Viewer):
         self._rendering_tab_handles[
             "fps_render_number"
         ].value = self.render_tab_state.fps_render
+
+    def _connect_client(self, client: viser.ClientHandle):
+        # Set initial camera extrinsics parameters
+        if self.init_camera_extrinsics is not None:
+            cam = self.init_camera_extrinsics
+            # c2w: 4x4, 取旋转和平移
+            c2w = cam.c2w
+            # viser用四元数wxyz，和position
+            import viser.transforms as vt
+            R = c2w[:3, :3]
+            t = c2w[:3, 3]
+            wxyz = vt.SO3.from_matrix(R).wxyz.astype(float)
+            client.camera.wxyz = wxyz
+            client.camera.position = t
+        # 调用父类逻辑
+        super()._connect_client(client)

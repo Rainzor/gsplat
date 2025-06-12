@@ -326,6 +326,8 @@ class Runner:
         os.makedirs(self.render_dir, exist_ok=True)
         self.ply_dir = f"{cfg.result_dir}/ply"
         os.makedirs(self.ply_dir, exist_ok=True)
+        self.colmap_dir = f"{cfg.result_dir}/colmap"
+        os.makedirs(self.colmap_dir, exist_ok=True)
 
         # Tensorboard
         self.writer = SummaryWriter(log_dir=f"{cfg.result_dir}/tb")
@@ -346,6 +348,29 @@ class Runner:
         self.valset = Dataset(self.parser, split="val")
         self.scene_scale = self.parser.scene_scale * 1.1 * cfg.global_scale
         print("Scene scale:", self.scene_scale)
+
+        # Colmap
+        index_train_data = []
+        image_ids_train_data = []
+        Ks_train_data = []
+        c2w_train_data = []
+        for index in self.trainset.indices:
+            camera_id = self.trainset.parser.camera_ids[index]
+            index_train_data.append(index)
+            image_ids_train_data.append(camera_id)
+            Ks_train_data.append(self.trainset.parser.Ks_dict[camera_id].copy()) 
+            c2w_train_data.append(self.trainset.parser.camtoworlds[index].copy())
+        # save camera data to colmap_dir
+        Ks_train_data = np.array(Ks_train_data)
+        c2w_train_data = np.array(c2w_train_data)
+        colmap_camera_data = {
+            'id': index_train_data,
+            "img_name": image_ids_train_data,
+            "Ks": Ks_train_data,
+            "camtoworlds": c2w_train_data,
+        }
+        np.save(f"{self.colmap_dir}/colmap_camera.npy", colmap_camera_data)
+
 
         # Model
         feature_dim = 32 if cfg.app_opt else None
@@ -614,7 +639,7 @@ class Runner:
 
             camtoworlds = camtoworlds_gt = data["camtoworld"].to(device)  # [1, 4, 4]
             Ks = data["K"].to(device)  # [1, 3, 3]
-            pixels = data["image"].to(device) / 255.0  # [1, H, W, 3]
+            pixels = data["image"].to(device) / 255.0  # [1, H, W, 3] in [0, 1]
             num_train_rays_per_step = (
                 pixels.shape[0] * pixels.shape[1] * pixels.shape[2]
             )

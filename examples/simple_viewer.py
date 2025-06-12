@@ -2,7 +2,7 @@ import argparse
 import math
 import os
 import time
-
+import json
 import imageio
 import numpy as np
 import torch
@@ -12,13 +12,11 @@ import viser
 from pathlib import Path
 from gsplat._helper import load_test_data
 from gsplat.distributed import cli
-from gsplat.rendering import rasterization
+from gsplat.rendering import rasterization, rasterization_inria_wrapper
 from plyfile import PlyData
 
 from nerfview import CameraState, RenderTabState, apply_float_colormap
 from gsplat_viewer import GsplatViewer, GsplatRenderTabState
-
-from gsplat import PngCompression
 
 def load_ply_to_gsplat_vars(path, max_sh_degree=3, device="cuda"):
     plydata = PlyData.read(path)
@@ -32,6 +30,7 @@ def load_ply_to_gsplat_vars(path, max_sh_degree=3, device="cuda"):
     # opacities
     opacities = np.asarray(plydata.elements[0]["opacity"])
     opacities = torch.tensor(opacities, dtype=torch.float, device=device).squeeze()
+    opacities = torch.sigmoid(opacities)
 
     # sh0
     features_dc = np.zeros((xyz.shape[0], 3, 1))
@@ -56,6 +55,7 @@ def load_ply_to_gsplat_vars(path, max_sh_degree=3, device="cuda"):
     for idx, attr_name in enumerate(scale_names):
         scales[:, idx] = np.asarray(plydata.elements[0][attr_name])
     scales = torch.tensor(scales, dtype=torch.float, device=device)
+    scales = torch.exp(scales)
 
     # quats
     rot_names = [p.name for p in plydata.elements[0].properties if p.name.startswith("rot")]
@@ -63,10 +63,11 @@ def load_ply_to_gsplat_vars(path, max_sh_degree=3, device="cuda"):
     rots = np.zeros((xyz.shape[0], len(rot_names)))
     for idx, attr_name in enumerate(rot_names):
         rots[:, idx] = np.asarray(plydata.elements[0][attr_name])
-    # 假设 rots 已经是四元数 [N, 4]，否则需要转换
     quats = torch.tensor(rots, dtype=torch.float, device=device)
+    quats = F.normalize(quats, p=2, dim=-1)
 
     return means, quats, scales, opacities, sh0, shN
+
 
 def main(local_rank: int, world_rank, world_size: int, args):
     torch.manual_seed(42)
@@ -181,7 +182,36 @@ def main(local_rank: int, world_rank, world_size: int, args):
         shN = torch.cat(shN, dim=0)
         colors = torch.cat([sh0, shN], dim=-2)
         sh_degree = int(math.sqrt(colors.shape[-2]) - 1)
+
         print("Number of Gaussians:", len(means))
+    
+    if args.camera_path is not None:
+        if args.train_mode == "gsplat":
+            colmap_camera_data = np.load(args.camera_path, allow_pickle=True).item()
+            Ks = colmap_camera_data["Ks"]
+            camtoworlds = colmap_camera_data["camtoworlds"]
+            init_camera_extrinsics = CameraState(
+                c2w=camtoworlds[0],
+                fov=None,
+                aspect=None,
+            )
+        elif args.train_mode == "3dgs":
+            colmap_camera_data = json.load(open(args.camera_path))[0]
+            rotate = np.array(colmap_camera_data["rotation"])
+            trans = np.array(colmap_camera_data["position"])
+            c2w = np.eye(4)
+            c2w[:3, :3] = rotate
+            c2w[:3, 3] = trans
+            init_camera_extrinsics = CameraState(
+                c2w=c2w,
+                fov=None,
+                aspect=None,
+            )
+        else:
+            raise ValueError
+    else:
+        init_camera_extrinsics = None
+
         
     # register and open viewer
     @torch.no_grad()
@@ -235,8 +265,7 @@ def main(local_rank: int, world_rank, world_size: int, args):
                 with_ut=args.with_ut,
                 with_eval3d=args.with_eval3d,
             )
-        elif args.backend == "inria":
-            from gsplat import rasterization_inria_wrapper
+        elif args.backend == "3dgs":
             render_colors, render_alphas, info = rasterization_inria_wrapper(
                 means,  # [N, 3]
                 quats,  # [N, 4]
@@ -286,7 +315,7 @@ def main(local_rank: int, world_rank, world_size: int, args):
                 .cpu()
                 .numpy()
             )
-        elif render_tab_state.render_mode == "alpha":
+        elif render_tab_state.render_mode == "alpha" and render_alphas is not None:
             alpha = render_alphas[0, ..., 0:1]
             renders = (
                 apply_float_colormap(alpha, render_tab_state.colormap).cpu().numpy()
@@ -299,6 +328,7 @@ def main(local_rank: int, world_rank, world_size: int, args):
         render_fn=viewer_render_fn,
         output_dir=Path(args.output_dir),
         mode="rendering",
+        init_camera_extrinsics=init_camera_extrinsics,
     )
     print("Viewer running... Ctrl+C to exit.")
     time.sleep(100000)
@@ -319,22 +349,24 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument(
         "--output_dir", type=str, default="results/", help="where to dump outputs"
-    )
+    ),
     parser.add_argument(
         "--scene_grid", type=int, default=1, help="repeat the scene into a grid of NxN"
     )
     parser.add_argument(
-        "--ckpt", type=str, nargs="+", default=None, help="path to the .pt file"
+        "--ckpt", type=str, nargs="+", default=None, help="path to the .pt / .ply file"
     )
+    parser.add_argument("--train_mode", type=str, default='gsplat', help="gsplat, 3dgs")
     parser.add_argument(
         "--port", type=int, default=8080, help="port for the viewer server"
     )
     parser.add_argument(
         "--with_ut", action="store_true", help="use uncentered transform"
     )
+    parser.add_argument("--camera_path", type=str, default=None, help="path to the camera file")
     parser.add_argument("--with_eval3d", action="store_true", help="use eval 3D")
 
-    parser.add_argument("--backend", type=str, default="gsplat", help="gsplat, inria")
+    parser.add_argument("--backend", type=str, default="gsplat", help="gsplat, 3dgs")
     parser.add_argument("--compress", action="store_true", help="compress the scene")
     args = parser.parse_args()
     assert args.scene_grid % 2 == 1, "scene_grid must be odd"

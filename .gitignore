@@ -123,6 +123,6 @@ compile_commands.json
 *.dump
 
 data
-results
+results*
 
 !examples/benchmarks/compression/results/
