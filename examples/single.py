@@ -73,8 +73,6 @@ def run(
     seed : int, optional
         The seed, by default 2. if -1, use random seed.
     """      
-    width = 512
-    height = 480 
     stream = StreamDiffusionWrapper(
         model_id_or_path=model_id_or_path,
         t_index_list=[32, 45],
