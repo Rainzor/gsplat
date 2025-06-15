@@ -14,9 +14,11 @@ from gsplat._helper import load_test_data
 from gsplat.distributed import cli
 from gsplat.rendering import rasterization, rasterization_inria_wrapper
 from plyfile import PlyData
+import PIL.Image
+from wrapper import StreamDiffusionWrapper
 
 from nerfview import CameraState, RenderTabState, apply_float_colormap
-from gsplat_viewer import GsplatViewer, GsplatRenderTabState
+from gsplat_viewer_diffusion import GsplatViewer, GsplatRenderTabState
 
 def load_ply_to_gsplat_vars(path, max_sh_degree=3, device="cuda"):
     plydata = PlyData.read(path)
@@ -192,7 +194,7 @@ def main(local_rank: int, world_rank, world_size: int, args):
             camtoworlds = colmap_camera_data["camtoworlds"]
             init_camera_extrinsics = CameraState(
                 c2w=camtoworlds[0],
-                fov=None,
+                fov=50,
                 aspect=None,
             )
         elif args.train_mode == "3dgs":
@@ -204,7 +206,7 @@ def main(local_rank: int, world_rank, world_size: int, args):
             c2w[:3, 3] = trans
             init_camera_extrinsics = CameraState(
                 c2w=c2w,
-                fov=None,
+                fov=50,
                 aspect=None,
             )
         else:
@@ -212,7 +214,62 @@ def main(local_rank: int, world_rank, world_size: int, args):
     else:
         init_camera_extrinsics = None
 
-        
+
+
+    # === StreamDiffusionWrapper Initialization ===
+    if args.diffusion:
+        stream = StreamDiffusionWrapper(
+            model_id_or_path="KBlueLeaf/kohaku-v2.1",
+            t_index_list=[32, 45],
+            mode="img2img",
+            width=512,
+            height=512,
+            frame_buffer_size=1,
+            # acceleration="xformers",
+            acceleration="tensorrt",
+            use_lcm_lora=True,
+            use_tiny_vae=True,
+            device="cuda",
+            dtype=torch.float16,
+            seed=2,
+        )
+        stream.prepare(
+            prompt="a low quality scene need to be improved",
+            negative_prompt="bad image , bad quality",
+            num_inference_steps=50,
+            guidance_scale=1.4,
+            delta=0.5,
+        )
+        first_render = None
+        width = 512
+        height = 512
+        aspect = 1.0
+        c2w = torch.from_numpy(init_camera_extrinsics.c2w).float().to(device)
+        K = torch.from_numpy(init_camera_extrinsics.get_K((width, height))).float().to(device)
+        viewmat = c2w.inverse()
+        first_render, _, _ = rasterization(
+                    means,  # [N, 3]
+                    quats,  # [N, 4]
+                    scales,  # [N, 3]
+                    opacities,  # [N]
+                    colors,  # [N, S, 3]
+                    viewmat[None],  # [1, 4, 4]
+                    K[None],  # [1, 3, 3]
+                    width,
+                    height,
+                    sh_degree=3
+                )
+        first_render = first_render[0, ..., 0:3].clamp(0, 1) # [H, W, 3]
+        first_render = first_render.permute(2, 0, 1) # [3, H, W]
+        first_render = first_render.unsqueeze(0) # [1, 3, H, W]
+        warmup = 10
+        for _ in range(warmup):
+            stream.stream(first_render)
+    else:
+        stream = None
+
+
+
     # register and open viewer
     @torch.no_grad()
     def viewer_render_fn(camera_state: CameraState, render_tab_state: RenderTabState):
@@ -224,6 +281,22 @@ def main(local_rank: int, world_rank, world_size: int, args):
         else:
             width = render_tab_state.viewer_width
             height = render_tab_state.viewer_height
+        
+        aspect = camera_state.aspect
+        max_img_res = render_tab_state.viewer_res
+        max_H = max_img_res
+        max_W = int(max_H * aspect)
+        if max_W > max_img_res:
+            max_W = max_img_res
+            max_H = int(max_W / aspect)
+        
+        img_canvas = np.zeros((max_H, max_W, 3))
+
+        # Restrict the image size to 512x512
+        width = 512
+        height = 512
+
+
         c2w = camera_state.c2w
         K = camera_state.get_K((width, height))
         c2w = torch.from_numpy(c2w).float().to(device)
@@ -236,6 +309,7 @@ def main(local_rank: int, world_rank, world_size: int, args):
             "depth(expected)": "ED",
             "alpha": "RGB",
         }
+        # print(width, height, camera_state.aspect)
         if args.backend == "gsplat":
             render_colors, render_alphas, info = rasterization(
                 means,  # [N, 3]
@@ -285,15 +359,31 @@ def main(local_rank: int, world_rank, world_size: int, args):
                     if sh_degree is not None
                     else None
                 ),
-                rasterize_mode=render_tab_state.rasterize_mode
+                rasterize_mode=render_tab_state.rasterize_mode,
             )
         else:
             raise ValueError
+        end_time = time.time()
         render_tab_state.total_gs_count = len(means)
-        render_tab_state.rendered_gs_count = (info["radii"] > 0).all(-1).sum().item()
+        if ("radii" in info) and (info["radii"] is not None):
+            render_tab_state.rendered_gs_count = (info["radii"] > 0).all(-1).sum().item()
+
         if render_tab_state.render_mode == "rgb":
             # colors represented with sh are not guranteed to be in [0, 1]
             render_colors = render_colors[0, ..., 0:3].clamp(0, 1)
+            render_colors = render_colors.permute(2, 0, 1).unsqueeze(0) # [1, 3, H, W]
+
+            if stream is not None:
+                render_colors = stream.stream(render_colors) # [1, 3, H, W]
+
+
+            width = min(width, max_W)
+            height = min(height, max_H)
+
+            render_colors = F.interpolate(render_colors, size=(height, width), mode="bilinear", align_corners=False)
+            render_colors = render_colors.permute(0, 2, 3, 1).squeeze(0) # [H, W, 3]
+            # end_time = time.time()
+
             renders = render_colors.cpu().numpy()
         elif render_tab_state.render_mode in ["depth(accumulated)", "depth(expected)"]:
             # normalize depth to [0, 1]
@@ -318,9 +408,13 @@ def main(local_rank: int, world_rank, world_size: int, args):
             renders = (
                 apply_float_colormap(alpha, render_tab_state.colormap).cpu().numpy()
             )
-        end_time = time.time()
+
+
+
+        img_canvas[:height, :width, :] = renders
+        # end_time = time.time()
         render_tab_state.fps_render = 1.0 / (end_time - start_time)
-        return renders
+        return img_canvas
 
     server = viser.ViserServer(port=args.port, verbose=False)
     _ = GsplatViewer(
@@ -368,6 +462,7 @@ if __name__ == "__main__":
 
     parser.add_argument("--backend", type=str, default="gsplat", help="gsplat, 3dgs")
     parser.add_argument("--compress", action="store_true", help="compress the scene")
+    parser.add_argument("--diffusion", action="store_true", help="use diffusion")
     args = parser.parse_args()
     assert args.scene_grid % 2 == 1, "scene_grid must be odd"
 

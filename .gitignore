@@ -1,5 +1,6 @@
 .clangd
 .history
+engines/
 compile_commands.json
 
 # Visual Studio Code configs.
