@@ -19,6 +19,22 @@ def download_image(url: str):
     response = requests.get(url)
     image = PIL.Image.open(io.BytesIO(response.content))
     return image
+def calculate_model_size(stream_wrapper: StreamDiffusionWrapper):
+
+    components = {
+        "UNet": stream_wrapper.stream.unet,
+        "VAE": stream_wrapper.stream.vae,
+        "Text Encoder": stream_wrapper.stream.text_encoder,
+    }
+
+    total_params = 0
+    for name, model in components.items():
+        params = sum(p.numel() for p in model.parameters())
+        total_params += params
+        print(f"{name} Parameters: {params / 1e6:.2f}M")
+
+    print(f"Total Parameters: {total_params / 1e6:.2f}M")
+    return total_params
 
 
 def run(
@@ -92,7 +108,7 @@ def run(
         cfg_type="initialize",  # initialize, full, self , none
         seed=seed,
     )
-
+    calculate_model_size(stream)
     stream.prepare(
         prompt=prompt,
         negative_prompt=negative_prompt,
@@ -104,14 +120,11 @@ def run(
     downloaded_image = download_image("https://github.com/ddpn08.png").resize(
         (width, height)
     ) 
-    print(downloaded_image.size)
     image_tensor = stream.preprocess_image(downloaded_image)
-    print(image_tensor.shape)
     # warmup
     for _ in range(warmup):
         res = stream.stream(image_tensor)
 
-    print(res.shape)
     results = []
 
     start = torch.cuda.Event(enable_timing=True)

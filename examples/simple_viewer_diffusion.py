@@ -363,7 +363,7 @@ def main(local_rank: int, world_rank, world_size: int, args):
             )
         else:
             raise ValueError
-        end_time = time.time()
+        # end_time = time.time()
         render_tab_state.total_gs_count = len(means)
         if ("radii" in info) and (info["radii"] is not None):
             render_tab_state.rendered_gs_count = (info["radii"] > 0).all(-1).sum().item()
@@ -382,7 +382,7 @@ def main(local_rank: int, world_rank, world_size: int, args):
 
             render_colors = F.interpolate(render_colors, size=(height, width), mode="bilinear", align_corners=False)
             render_colors = render_colors.permute(0, 2, 3, 1).squeeze(0) # [H, W, 3]
-            # end_time = time.time()
+            end_time = time.time()
 
             renders = render_colors.cpu().numpy()
         elif render_tab_state.render_mode in ["depth(accumulated)", "depth(expected)"]:
