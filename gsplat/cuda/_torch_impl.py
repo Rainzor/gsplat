@@ -75,6 +75,56 @@ def _quat_scale_to_covar_preci(
     return covars if compute_covar else None, precis if compute_preci else None
 
 
+def _covar_to_quat_scale(covars: Tensor) -> Tuple[Tensor, Tensor]:
+    """Convert covariance matrix to quaternion and scale.
+    
+    Args:
+        covars: Covariance matrices. [..., 3, 3]
+        
+    Returns:
+        A tuple:
+        - quats: Quaternions. [..., 4]
+        - scales: Scales. [..., 3]
+    """
+    # Perform eigendecomposition
+    eigenvalues, eigenvectors = torch.linalg.eigh(covars)
+    
+    # Get scales from eigenvalues (they are the square roots of eigenvalues)
+    scales = torch.sqrt(eigenvalues)
+    
+    # Get rotation matrix from eigenvectors
+    R = eigenvectors
+    
+    # Convert rotation matrix to quaternion
+    # First ensure R is a proper rotation matrix (det(R) = 1)
+    det = torch.linalg.det(R)
+    R = R * torch.sign(det)[..., None, None]
+    
+    # Convert to quaternion using the method from _quat_to_rotmat
+    # We'll use the largest element to avoid numerical issues
+    q = torch.zeros((*R.shape[:-2], 4), device=R.device, dtype=R.dtype)
+    
+    # Find the largest element in the diagonal
+    diag = torch.diagonal(R, dim1=-2, dim2=-1)
+    max_diag_idx = torch.argmax(diag, dim=-1)
+    
+    # Use the largest element to compute the quaternion
+    for i in range(4):
+        if i == 0:
+            # w component
+            q[..., 0] = torch.sqrt(1 + diag[..., 0] + diag[..., 1] + diag[..., 2]) / 2
+        else:
+            # x, y, z components
+            j = (i + 1) % 3
+            k = (i + 2) % 3
+            q[..., i] = (R[..., j, k] - R[..., k, j]) / (4 * q[..., 0])
+    
+    # Normalize quaternion
+    quats = F.normalize(q, p=2, dim=-1)
+    
+    return quats, scales
+
+
 def _persp_proj(
     means: Tensor,  # [..., C, N, 3]
     covars: Tensor,  # [..., C, N, 3, 3]
@@ -779,7 +829,7 @@ def _eval_sh_bases_fast(basis_dim: int, dirs: Tensor):
 
     fTmpD = z * (-4.683325804901025 * z2 + 2.007139630671868)
     fTmpC = 3.31161143515146 * z2 - 0.47308734787878
-    fTmpB = -1.770130769779931 * z
+    fTmpB = -1.7701305899266435 * z
     fTmpA = 0.6258357354491763
     fC3 = x * fC2 - y * fS2
     fS3 = x * fS2 + y * fC2

@@ -173,8 +173,8 @@ def main(local_rank: int, world_rank, world_size: int, args):
                 quats.append(_quats)
                 scales.append(_scales)
                 opacities.append(_opacities)
-                sh0.append(_sh0)
-                shN.append(_shN)
+                sh0.append(_sh0) # [N, 3, 1]
+                shN.append(_shN) # [N, 3, (max_sh_degree + 1) ** 2 - 1]
 
         means = torch.cat(means, dim=0)
         quats = torch.cat(quats, dim=0)
@@ -182,6 +182,10 @@ def main(local_rank: int, world_rank, world_size: int, args):
         opacities = torch.cat(opacities, dim=0)
         sh0 = torch.cat(sh0, dim=0)
         shN = torch.cat(shN, dim=0)
+        print(means.shape, quats.shape, scales.shape, opacities.shape)
+        print(sh0.shape, shN.shape)
+
+
         colors = torch.cat([sh0, shN], dim=-2)
         sh_degree = int(math.sqrt(colors.shape[-2]) - 1)
 
@@ -192,7 +196,7 @@ def main(local_rank: int, world_rank, world_size: int, args):
             colmap_camera_data = np.load(args.camera_path, allow_pickle=True).item()
             Ks = colmap_camera_data["Ks"]
             camtoworlds = colmap_camera_data["camtoworlds"]
-            init_camera_extrinsics = CameraState(
+            init_camera = CameraState(
                 c2w=camtoworlds[0],
                 fov=50,
                 aspect=None,
@@ -204,48 +208,51 @@ def main(local_rank: int, world_rank, world_size: int, args):
             c2w = np.eye(4)
             c2w[:3, :3] = rotate
             c2w[:3, 3] = trans
-            init_camera_extrinsics = CameraState(
+            init_camera = CameraState(
                 c2w=c2w,
                 fov=50,
                 aspect=None,
             )
-        else:
-            raise ValueError
     else:
-        init_camera_extrinsics = None
+        init_camera = None
 
 
 
     # === StreamDiffusionWrapper Initialization ===
     if args.diffusion:
         stream = StreamDiffusionWrapper(
-            model_id_or_path="KBlueLeaf/kohaku-v2.1",
+            model_id_or_path="stabilityai/sd-turbo",
             t_index_list=[32, 45],
             mode="img2img",
+            frame_buffer_size=1,
             width=512,
             height=512,
-            frame_buffer_size=1,
-            # acceleration="xformers",
-            acceleration="tensorrt",
-            use_lcm_lora=True,
+            acceleration=args.acceleration,
+            use_lcm_lora=False,
             use_tiny_vae=True,
-            device="cuda",
+            use_denoising_batch=True,
+            enable_similar_image_filter=True,
+            similar_image_filter_threshold=0.98,
+            similar_image_filter_max_skip_frame=10,
+            cfg_type="none",
+            output_type="pt",
+            warmup=10,
+            device=device,
             dtype=torch.float16,
             seed=2,
         )
         stream.prepare(
-            prompt="a low quality scene need to be improved",
-            negative_prompt="bad image , bad quality",
+            prompt="A green train on a railway track. Include a gravel path beside it, a few orange traffic cones, and a bright blue sky. Add rolling green hills and trees in the background. ",
+            negative_prompt="black and white, blurry, low resolution, pixelated,  pixel art, low quality, low fidelity",
             num_inference_steps=50,
-            guidance_scale=1.4,
-            delta=0.5,
-        )
+            guidance_scale=1.2
+            )
         first_render = None
         width = 512
         height = 512
         aspect = 1.0
-        c2w = torch.from_numpy(init_camera_extrinsics.c2w).float().to(device)
-        K = torch.from_numpy(init_camera_extrinsics.get_K((width, height))).float().to(device)
+        c2w = torch.from_numpy(init_camera.c2w).float().to(device)
+        K = torch.from_numpy(init_camera.get_K((width, height))).float().to(device)
         viewmat = c2w.inverse()
         first_render, _, _ = rasterization(
                     means,  # [N, 3]
@@ -422,7 +429,7 @@ def main(local_rank: int, world_rank, world_size: int, args):
         render_fn=viewer_render_fn,
         output_dir=Path(args.output_dir),
         mode="rendering",
-        init_camera_extrinsics=init_camera_extrinsics,
+        init_camera=init_camera,
     )
     print("Viewer running... Ctrl+C to exit.")
     time.sleep(100000)
@@ -463,6 +470,7 @@ if __name__ == "__main__":
     parser.add_argument("--backend", type=str, default="gsplat", help="gsplat, 3dgs")
     parser.add_argument("--compress", action="store_true", help="compress the scene")
     parser.add_argument("--diffusion", action="store_true", help="use diffusion")
+    parser.add_argument("--acceleration", type=str, default="xformers", help="acceleration method", choices=["none", "xformers", "tensorrt"])
     args = parser.parse_args()
     assert args.scene_grid % 2 == 1, "scene_grid must be odd"
 

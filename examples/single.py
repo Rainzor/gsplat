@@ -89,26 +89,48 @@ def run(
     seed : int, optional
         The seed, by default 2. if -1, use random seed.
     """      
+    # stream = StreamDiffusionWrapper(
+    #     model_id_or_path=model_id_or_path,
+    #     t_index_list=[32, 45],
+    #     lora_dict=lora_dict,
+    #     mode="img2img",
+    #     frame_buffer_size=1,
+    #     width=width,
+    #     height=height,
+    #     warmup=warmup,
+    #     acceleration=acceleration,
+    #     device_ids=device_ids,
+    #     use_lcm_lora=use_lcm_lora,
+    #     use_tiny_vae=use_tiny_vae,
+    #     enable_similar_image_filter=False,
+    #     similar_image_filter_threshold=0.98,
+    #     use_denoising_batch=use_denoising_batch,
+    #     cfg_type="initialize",  # initialize, full, self , none
+    #     seed=seed,
+    # )
+    base_model = "stabilityai/sd-turbo"
+    device = torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu")
     stream = StreamDiffusionWrapper(
-        model_id_or_path=model_id_or_path,
-        t_index_list=[32, 45],
-        lora_dict=lora_dict,
-        mode="img2img",
+        model_id_or_path=base_model,
+        device= device,
+        t_index_list=[35, 45],
         frame_buffer_size=1,
         width=width,
         height=height,
+        use_lcm_lora=False,
         warmup=warmup,
         acceleration=acceleration,
         device_ids=device_ids,
-        use_lcm_lora=use_lcm_lora,
-        use_tiny_vae=use_tiny_vae,
-        enable_similar_image_filter=False,
-        similar_image_filter_threshold=0.98,
+        mode="img2img",
         use_denoising_batch=use_denoising_batch,
-        cfg_type="initialize",  # initialize, full, self , none
+        use_tiny_vae=use_tiny_vae,
+        cfg_type="none",
+        output_type="pil",
         seed=seed,
+        enable_similar_image_filter=False,
     )
-    calculate_model_size(stream)
+    if acceleration != "tensorrt":
+        calculate_model_size(stream)
     stream.prepare(
         prompt=prompt,
         negative_prompt=negative_prompt,

@@ -365,9 +365,9 @@ class Runner:
         c2w_train_data = np.array(c2w_train_data)
         colmap_camera_data = {
             'id': index_train_data,
-            "img_name": image_ids_train_data,
+            "image_id": image_ids_train_data,
             "Ks": Ks_train_data,
-            "camtoworlds": c2w_train_data,
+            "camtoworlds": c2w_train_data
         }
         np.save(f"{self.colmap_dir}/colmap_camera.npy", colmap_camera_data)
 
@@ -534,6 +534,7 @@ class Runner:
             colors = torch.sigmoid(colors)
         else:
             colors = torch.cat([self.splats["sh0"], self.splats["shN"]], 1)  # [N, K, 3]
+
 
         if rasterize_mode is None:
             rasterize_mode = "antialiased" if self.cfg.antialiased else "classic"

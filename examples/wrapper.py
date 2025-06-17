@@ -412,21 +412,48 @@ class StreamDiffusionWrapper:
         StreamDiffusion
             The loaded model.
         """
+        
+        # try:  
+        #     pipe: StableDiffusionPipeline = StableDiffusionPipeline.from_pretrained(
+        #         model_id_or_path
+        #     ).to(device=self.device, dtype=self.dtype)
 
-        try:  
-            pipe: StableDiffusionPipeline = StableDiffusionPipeline.from_pretrained(
+        # except ValueError: 
+        #     # Load model weights saved in the .ckpt format
+        #     pipe: StableDiffusionPipeline = StableDiffusionPipeline.from_single_file(
+        #         model_id_or_path,
+        #     ).to(device=self.device, dtype=self.dtype)
+        # except Exception:  # No model found
+        #     traceback.print_exc()
+        #     print("Model load has failed. Doesn't exist.")
+        #     exit()
+        try:
+            pipe = StableDiffusionPipeline.from_pretrained(
                 model_id_or_path,
-                use_safetensors=False
+                use_safetensors=True,
             ).to(device=self.device, dtype=self.dtype)
 
-        except ValueError: 
-            # Load model weights saved in the .ckpt format
-            pipe: StableDiffusionPipeline = StableDiffusionPipeline.from_single_file(
-                model_id_or_path,
-            ).to(device=self.device, dtype=self.dtype)
-        except Exception:  # No model found
+        except (OSError, ValueError) as pretrained_error:
+            try:
+                # Check if it's a single file path
+                if os.path.isfile(model_id_or_path):
+                    pipe = StableDiffusionPipeline.from_single_file(
+                        model_id_or_path
+                    ).to(device=self.device, dtype=self.dtype)
+                else:
+                    pipe = StableDiffusionPipeline.from_pretrained(
+                        model_id_or_path,
+                        use_safetensors=False  # Downgrade to bin format
+                    ).to(device=self.device, dtype=self.dtype)
+                    
+            except Exception as fallback_error:
+                traceback.print_exc()
+                print(f"Model load failed: {fallback_error}")
+                exit()
+                
+        except Exception as unexpected_error:
             traceback.print_exc()
-            print("Model load has failed. Doesn't exist.")
+            print(f"Unexpected error: {unexpected_error}")
             exit()
 
         stream = StreamDiffusion(

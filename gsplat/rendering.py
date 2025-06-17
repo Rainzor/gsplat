@@ -1126,16 +1126,21 @@ def rasterization_inria_wrapper(
         https://github.com/graphdeco-inria/diff-gaussian-rasterization
 
     """
-    if fast_mode:
-        from fast_gauss import (
-            GaussianRasterizationSettings,
-            GaussianRasterizer,
-        )
-    else:
-        from diff_gaussian_rasterization import (
-            GaussianRasterizationSettings,
-            GaussianRasterizer,
-        )
+    # if fast_mode:
+    #     from fast_gauss import (
+    #         GaussianRasterizationSettings,
+    #         GaussianRasterizer,
+    #     )
+    # else:
+    #     from diff_gaussian_rasterization import (
+    #         GaussianRasterizationSettings,
+    #         GaussianRasterizer,
+    #     )
+
+    from diff_gaussian_rasterization import (
+        GaussianRasterizationSettings,
+        GaussianRasterizer,
+    )
 
     assert eps2d == 0.3, "This is hard-coded in CUDA to be 0.3"
     batch_dims = means.shape[:-2]
@@ -1214,7 +1219,9 @@ def rasterization_inria_wrapper(
             tanfovx = math.tan(FoVx * 0.5)
             tanfovy = math.tan(FoVy * 0.5)
 
+            # world to camera, extrinsic matrix
             world_view_transform = viewmats[bid, cid].transpose(0, 1)
+            # camera to image, intrinsic matrix
             projection_matrix = get_projection_matrix(
                 znear=near_plane, zfar=far_plane, fovX=FoVx, fovY=FoVy, device=device
             ).transpose(0, 1)

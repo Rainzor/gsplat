@@ -40,10 +40,10 @@ class GsplatViewer(Viewer):
         render_fn: Callable,
         output_dir: Path,
         mode: Literal["rendering", "training"] = "rendering",
-        init_camera_extrinsics: CameraState = None,
+        init_camera: CameraState = None,
     ):
         super().__init__(server, render_fn, output_dir, mode)
-        self.init_camera_extrinsics = init_camera_extrinsics
+        self.init_camera = init_camera
         server.gui.set_panel_label("gsplat viewer")
         # print(self.render_tab_state.viewer_width, self.render_tab_state.viewer_height)
         # print(self.render_tab_state.render_width, self.render_tab_state.render_height)
@@ -273,8 +273,8 @@ class GsplatViewer(Viewer):
 
     def _connect_client(self, client: viser.ClientHandle):
         # Set initial camera extrinsics parameters
-        if self.init_camera_extrinsics is not None:
-            cam = self.init_camera_extrinsics
+        if self.init_camera is not None:
+            cam = self.init_camera
             # c2w: 4x4, 取旋转和平移
             c2w = cam.c2w
             # viser用四元数wxyz，和position
