@@ -10,7 +10,8 @@ from setuptools import find_packages, setup
 __version__ = None
 exec(open("gsplat/version.py", "r").read())
 
-URL = "https://github.com/nerfstudio-project/gsplat"
+# URL = "https://github.com/nerfstudio-project/gsplat"
+URL = "https://github.com/Rainzor/gsplat"
 
 BUILD_NO_CUDA = os.getenv("BUILD_NO_CUDA", "0") == "1"
 WITH_SYMBOLS = os.getenv("WITH_SYMBOLS", "0") == "1"

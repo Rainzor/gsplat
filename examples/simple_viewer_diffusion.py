@@ -15,7 +15,7 @@ from gsplat.distributed import cli
 from gsplat.rendering import rasterization, rasterization_inria_wrapper
 from plyfile import PlyData
 import PIL.Image
-from wrapper import StreamDiffusionWrapper
+from wrapper import StreamDiffusionWrapper, StreamV2VWrapper
 
 from nerfview import CameraState, RenderTabState, apply_float_colormap
 from gsplat_viewer_diffusion import GsplatViewer, GsplatRenderTabState
@@ -70,6 +70,108 @@ def load_ply_to_gsplat_vars(path, max_sh_degree=3, device="cuda"):
 
     return means, quats, scales, opacities, sh0, shN
 
+
+def load_stream(stream_type, width, height, acceleration, prompt, img = None, warmup=10, device="cuda"):
+    stream = None
+    if stream_type == "stream-diffusion":
+        stream = StreamDiffusionWrapper(
+            model_id_or_path="stabilityai/sd-turbo",
+            t_index_list=[22, 32, 45],
+            frame_buffer_size=1,
+            width=width,
+            height=height,
+            acceleration=acceleration,
+            use_lcm_lora=False,
+            use_tiny_vae=True,
+            use_denoising_batch=True,
+            enable_similar_image_filter=True,
+            similar_image_filter_threshold=0.98,
+            similar_image_filter_max_skip_frame=10,
+            cfg_type="none",
+            output_type="pt",
+            warmup=10,
+            device=device,
+            dtype=torch.float16,
+            seed=2,
+        )
+        stream.prepare(
+            prompt=prompt,
+            negative_prompt="black and white, blurry, low resolution, pixelated, pixel art, low quality, low fidelity",
+            num_inference_steps=50,
+            guidance_scale=1.2,
+        )
+
+    elif stream_type == "stream-v2v":
+        noise_strength = 0.4
+        diffusion_steps = 4
+        init_step = int(50 * (1 - noise_strength))
+        interval = int(50 * noise_strength) // diffusion_steps
+        t_index_list = [init_step + i * interval for i in range(diffusion_steps)]
+
+        stream = StreamV2VWrapper(
+            model_id_or_path="Jiali/stable-diffusion-1.5",
+            mode="img2img",
+            t_index_list=t_index_list,
+            frame_buffer_size=1,
+            width=width,
+            height=height,
+            warmup=10,
+            acceleration=acceleration,
+            do_add_noise=True,
+            output_type="pt",
+            enable_similar_image_filter=True,
+            similar_image_filter_threshold=0.98,
+            use_denoising_batch=True,
+            use_cached_attn=True,
+            use_feature_injection=True,
+            feature_injection_strength=0.8,
+            feature_similarity_threshold=0.98,
+            cache_interval=4,
+            cache_maxframes=1,
+            use_tome_cache=True,
+            seed=42,
+        )
+        stream.prepare(
+            prompt=prompt,
+            num_inference_steps=50,
+            guidance_scale=1.0,
+        )
+        # Specify LORAs
+        if any(word in prompt for word in ['pixelart', 'pixel art', 'Pixel art', 'PixArFK']):
+            stream.stream.load_lora("./lora_weights/PixelArtRedmond15V-PixelArt-PIXARFK.safetensors", adapter_name='pixelart')
+            stream.stream.pipe.set_adapters(["lcm", "pixelart"], adapter_weights=[1.0, 1.0])
+            print("Use LORA: pixelart in ./lora_weights/PixelArtRedmond15V-PixelArt-PIXARFK.safetensors")
+        elif any(word in prompt for word in ['lowpoly', 'low poly', 'Low poly']):
+            stream.stream.load_lora("./lora_weights/low_poly.safetensors", adapter_name='lowpoly')
+            stream.stream.pipe.set_adapters(["lcm", "lowpoly"], adapter_weights=[1.0, 1.0])
+            print("Use LORA: lowpoly in ./lora_weights/low_poly.safetensors")
+        elif any(word in prompt for word in ['Claymation', 'claymation']):
+            stream.stream.load_lora("./lora_weights/Claymation.safetensors", adapter_name='claymation')
+            stream.stream.pipe.set_adapters(["lcm", "claymation"], adapter_weights=[1.0, 1.0])
+            print("Use LORA: claymation in ./lora_weights/Claymation.safetensors")
+        elif any(word in prompt for word in ['crayons', 'Crayons', 'crayons doodle', 'Crayons doodle']):
+            stream.stream.load_lora("./lora_weights/doodle.safetensors", adapter_name='crayons')
+            stream.stream.pipe.set_adapters(["lcm", "crayons"], adapter_weights=[1.0, 1.0])
+            print("Use LORA: crayons in ./lora_weights/doodle.safetensors")
+        elif any(word in prompt for word in ['sketch', 'Sketch', 'pencil drawing', 'Pencil drawing']):
+            stream.stream.load_lora("./lora_weights/Sketch_offcolor.safetensors", adapter_name='sketch')
+            stream.stream.pipe.set_adapters(["lcm", "sketch"], adapter_weights=[1.0, 1.0])
+            print("Use LORA: sketch in ./lora_weights/Sketch_offcolor.safetensors")
+        elif any(word in prompt for word in ['oil painting', 'Oil painting']):
+            stream.stream.load_lora("./lora_weights/bichu-v0612.safetensors", adapter_name='oilpainting')
+            stream.stream.pipe.set_adapters(["lcm", "oilpainting"], adapter_weights=[1.0, 1.0])
+            print("Use LORA: oilpainting in ./lora_weights/bichu-v0612.safetensors")
+
+    else:
+        raise ValueError(f"Unknown stream type: {stream_type}. Supported types are 'stream-diffusion' and 'stream-v2v'.")
+
+    warmup = max(warmup, stream.batch_size)
+    for _ in range(warmup):
+        if img is not None:
+            stream(img)
+        else:
+            stream(torch.zeros((3, height, width), device=device))
+    return stream
 
 def main(local_rank: int, world_rank, world_size: int, args):
     torch.manual_seed(42)
@@ -182,15 +284,14 @@ def main(local_rank: int, world_rank, world_size: int, args):
         opacities = torch.cat(opacities, dim=0)
         sh0 = torch.cat(sh0, dim=0)
         shN = torch.cat(shN, dim=0)
-        print(means.shape, quats.shape, scales.shape, opacities.shape)
-        print(sh0.shape, shN.shape)
-
+        # print(means.shape, quats.shape, scales.shape, opacities.shape)
+        # print(sh0.shape, shN.shape)
 
         colors = torch.cat([sh0, shN], dim=-2)
         sh_degree = int(math.sqrt(colors.shape[-2]) - 1)
 
         print("Number of Gaussians:", len(means))
-    
+
     if args.camera_path is not None:
         if args.train_mode == "gsplat":
             colmap_camera_data = np.load(args.camera_path, allow_pickle=True).item()
@@ -216,45 +317,17 @@ def main(local_rank: int, world_rank, world_size: int, args):
     else:
         init_camera = None
 
-
-
     # === StreamDiffusionWrapper Initialization ===
-    if args.diffusion:
-        stream = StreamDiffusionWrapper(
-            model_id_or_path="stabilityai/sd-turbo",
-            t_index_list=[32, 45],
-            mode="img2img",
-            frame_buffer_size=1,
-            width=512,
-            height=512,
-            acceleration=args.acceleration,
-            use_lcm_lora=False,
-            use_tiny_vae=True,
-            use_denoising_batch=True,
-            enable_similar_image_filter=True,
-            similar_image_filter_threshold=0.98,
-            similar_image_filter_max_skip_frame=10,
-            cfg_type="none",
-            output_type="pt",
-            warmup=10,
-            device=device,
-            dtype=torch.float16,
-            seed=2,
-        )
-        stream.prepare(
-            prompt="A green train on a railway track. Include a gravel path beside it, a few orange traffic cones, and a bright blue sky. Add rolling green hills and trees in the background. ",
-            negative_prompt="black and white, blurry, low resolution, pixelated,  pixel art, low quality, low fidelity",
-            num_inference_steps=50,
-            guidance_scale=1.2
-            )
-        first_render = None
-        width = 512
-        height = 512
-        aspect = 1.0
-        c2w = torch.from_numpy(init_camera.c2w).float().to(device)
-        K = torch.from_numpy(init_camera.get_K((width, height))).float().to(device)
-        viewmat = c2w.inverse()
-        first_render, _, _ = rasterization(
+
+    streams = {}
+    first_render = None
+    width = 512
+    height = 512
+    aspect = 1.0
+    c2w = torch.from_numpy(init_camera.c2w).float().to(device)
+    K = torch.from_numpy(init_camera.get_K((width, height))).float().to(device)
+    viewmat = c2w.inverse()
+    first_render, _, _ = rasterization(
                     means,  # [N, 3]
                     quats,  # [N, 4]
                     scales,  # [N, 3]
@@ -266,16 +339,22 @@ def main(local_rank: int, world_rank, world_size: int, args):
                     height,
                     sh_degree=3
                 )
-        first_render = first_render[0, ..., 0:3].clamp(0, 1) # [H, W, 3]
-        first_render = first_render.permute(2, 0, 1) # [3, H, W]
-        first_render = first_render.unsqueeze(0) # [1, 3, H, W]
-        warmup = 10
-        for _ in range(warmup):
-            stream.stream(first_render)
-    else:
-        stream = None
+    first_render = first_render[0, ..., 0:3].clamp(0, 1) # [H, W, 3]
+    first_render = first_render.permute(2, 0, 1) # [3, H, W]
+    # first_render = first_render.unsqueeze(0) # [1, 3, H, W]
 
+    stream = load_stream(
+        args.diffusion,
+        width,
+        height,
+        acceleration = args.acceleration,
+        prompt = args.prompt,
+        img = first_render,
+        warmup = 10,
+        device = device,
+    )
 
+    streams[args.diffusion] = stream
 
     # register and open viewer
     @torch.no_grad()
@@ -288,21 +367,21 @@ def main(local_rank: int, world_rank, world_size: int, args):
         else:
             width = render_tab_state.viewer_width
             height = render_tab_state.viewer_height
-        
+
         aspect = camera_state.aspect
+        # render_tab_state.viewer_res = 2048
         max_img_res = render_tab_state.viewer_res
         max_H = max_img_res
         max_W = int(max_H * aspect)
         if max_W > max_img_res:
             max_W = max_img_res
             max_H = int(max_W / aspect)
-        
+
         img_canvas = np.zeros((max_H, max_W, 3))
 
         # Restrict the image size to 512x512
         width = 512
         height = 512
-
 
         c2w = camera_state.c2w
         K = camera_state.get_K((width, height))
@@ -315,6 +394,7 @@ def main(local_rank: int, world_rank, world_size: int, args):
             "depth(accumulated)": "D",
             "depth(expected)": "ED",
             "alpha": "RGB",
+            "diffusion": "RGB",
         }
         # print(width, height, camera_state.aspect)
         if args.backend == "gsplat":
@@ -380,10 +460,6 @@ def main(local_rank: int, world_rank, world_size: int, args):
             render_colors = render_colors[0, ..., 0:3].clamp(0, 1)
             render_colors = render_colors.permute(2, 0, 1).unsqueeze(0) # [1, 3, H, W]
 
-            if stream is not None:
-                render_colors = stream.stream(render_colors) # [1, 3, H, W]
-
-
             width = min(width, max_W)
             height = min(height, max_H)
 
@@ -410,13 +486,36 @@ def main(local_rank: int, world_rank, world_size: int, args):
                 .cpu()
                 .numpy()
             )
+            end_time = time.time()
         elif render_tab_state.render_mode == "alpha" and render_alphas is not None:
             alpha = render_alphas[0, ..., 0:1]
             renders = (
                 apply_float_colormap(alpha, render_tab_state.colormap).cpu().numpy()
             )
+            end_time = time.time()
+        elif render_tab_state.render_mode == "diffusion":
+            # colors represented with sh are not guranteed to be in [0, 1]
+            render_colors = render_colors[0, ..., 0:3].clamp(0, 1) # [H, W, 3]
+            render_colors = render_colors.permute(2, 0, 1).unsqueeze(0)  # [1, 3, H, W]
 
+            stream = streams.get(args.diffusion, None)
+            if stream is None:
+                raise ValueError(f"Stream {args.diffusion} is not initialized.")
+            render_colors = stream.stream(render_colors) 
 
+            width = min(width, max_W)
+            height = min(height, max_H)
+
+            render_colors = F.interpolate(
+                render_colors,
+                size=(height, width),
+                mode="bilinear",
+                align_corners=False,
+            )
+            render_colors = render_colors.permute(0, 2, 3, 1).squeeze(0)  # [H, W, 3]
+            end_time = time.time()
+
+            renders = render_colors.cpu().numpy()
 
         img_canvas[:height, :width, :] = renders
         # end_time = time.time()
@@ -449,7 +548,7 @@ if __name__ == "__main__":
     """
     parser = argparse.ArgumentParser()
     parser.add_argument(
-        "--output_dir", type=str, default="results/", help="where to dump outputs"
+        "--output_dir", '-o', type=str, default="results/", help="where to dump outputs"
     ),
     parser.add_argument(
         "--scene_grid", type=int, default=1, help="repeat the scene into a grid of NxN"
@@ -469,8 +568,14 @@ if __name__ == "__main__":
 
     parser.add_argument("--backend", type=str, default="gsplat", help="gsplat, 3dgs")
     parser.add_argument("--compress", action="store_true", help="compress the scene")
-    parser.add_argument("--diffusion", action="store_true", help="use diffusion")
-    parser.add_argument("--acceleration", type=str, default="xformers", help="acceleration method", choices=["none", "xformers", "tensorrt"])
+    parser.add_argument("--diffusion", '-d',type=str, default=None, help="use diffusion model for rendering", choices=["none", "stream-diffusion", "stream-v2v"])
+    parser.add_argument(
+        "--prompt",
+        type=str,
+        default="Claymation, a static train is on the railway track",
+        help="prompt for the diffusion model",
+    )
+    parser.add_argument("--acceleration", '-a',type=str, default="xformers", help="acceleration method", choices=["none", "xformers", "tensorrt"])
     args = parser.parse_args()
     assert args.scene_grid % 2 == 1, "scene_grid must be odd"
 

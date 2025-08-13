@@ -1,7 +1,21 @@
-.clangd
-.history
+
+vid2vid/demo_selfie/*
+.vscode/
+.history/
 engines/
-compile_commands.json
+output/
+*.csv
+*.mp4
+*.safetensors
+result_lcm.png
+model.ckpt
+*.png
+!./demo_w_camera/frontend/static/favicon.png
+
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
 
 # Visual Studio Code configs.
 .vscode/

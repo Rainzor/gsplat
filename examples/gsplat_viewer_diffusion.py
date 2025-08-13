@@ -18,7 +18,7 @@ class GsplatRenderTabState(RenderTabState):
     eps2d: float = 0.3
     backgrounds: Tuple[float, float, float] = (0.0, 0.0, 0.0)
     render_mode: Literal[
-        "rgb", "depth(accumulated)", "depth(expected)", "alpha"
+        "rgb", "depth(accumulated)", "depth(expected)", "alpha", "diffusion"
     ] = "rgb"
     normalize_nearfar: bool = False
     inverse: bool = False
@@ -53,10 +53,10 @@ class GsplatViewer(Viewer):
 
         # self.render_tab_state.render_width = 512
         # self.render_tab_state.render_height = 512
-        self.render_tab_state.viewer_res = 512
+        self.render_tab_state.viewer_res = 1024
         self._rendering_tab_handles["render_res_vec2"].value = (512, 512)
-        self._rendering_tab_handles["viewer_res_slider"].value = 512
-        self._rendering_tab_handles["viewer_res_slider"].max = 1024
+        self._rendering_tab_handles["viewer_res_slider"].value = 1024
+        self._rendering_tab_handles["viewer_res_slider"].max = 2048
 
 
     def _init_rendering_tab(self):
@@ -162,7 +162,7 @@ class GsplatViewer(Viewer):
 
                 render_mode_dropdown = server.gui.add_dropdown(
                     "Render Mode",
-                    ("rgb", "depth(accumulated)", "depth(expected)", "alpha"),
+                    ("rgb", "depth(accumulated)", "depth(expected)", "alpha", "diffusion"),
                     initial_value=self.render_tab_state.render_mode,
                     hint="Render mode to use.",
                 )
